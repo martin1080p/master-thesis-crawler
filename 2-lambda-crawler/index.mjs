@@ -156,6 +156,16 @@ async function _crawlDomain(domain) {
                     // anchor links for external domains
                     if (name === "a" && attribs.href) {
                         try {
+                            const href = attribs.href.trim().toLowerCase();
+
+                            if (
+                                href.startsWith("mailto:") ||
+                                href.startsWith("tel:") ||
+                                href.startsWith("javascript:")
+                            ) {
+                                return;
+                            }
+
                             const absoluteUrl = new URL(attribs.href, baseUrl).href;
                             const d = _getRegisteredDomain(absoluteUrl);
                             if (d && d !== baseDomain) {
