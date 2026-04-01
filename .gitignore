@@ -1,1 +1,5 @@
 node_modules
+merged.json
+input/
+sent_domains.txt
+uncrawled.txt

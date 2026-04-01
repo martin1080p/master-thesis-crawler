@@ -9,10 +9,9 @@ const __dirname = path.dirname(__filename);
 
 const INPUT_DIR = "./input";
 const OUTPUT_FILE = "./output/merged.json";
+const UNCRAWLED_FILE = "./output/uncrawled.txt";
+const linkedDomains = new Set();
 
-/**
- * Unwrap DynamoDB format
- */
 function unwrapDynamo(value) {
     if (value === null || value === undefined) return value;
 
@@ -21,7 +20,9 @@ function unwrapDynamo(value) {
     if (value.BOOL !== undefined) return value.BOOL;
 
     if (value.L !== undefined) {
-        return value.L.map(unwrapDynamo);
+        const links = value.L.map(unwrapDynamo);
+        links.forEach(linkedDomains.add, linkedDomains)
+        return links;
     }
 
     if (value.M !== undefined) {
@@ -93,14 +94,34 @@ async function run() {
 
     const all = [];
 
+    const primaryDomains = new Set();
+
     for (const file of files) {
         console.log(`Processing ${file}`);
         const data = await processGzFile(file);
         console.log(`  → ${data.length}`);
+
         all.push(...data);
+
+        data.forEach(d => primaryDomains.add(d.domain))
     }
 
+    // compute truly uncrawled
+    const uncrawled = [...linkedDomains].filter(
+        (d) => !primaryDomains.has(d) && d.includes('.cz')
+    );
+
+    // write output
     await fse.writeJson(OUTPUT_FILE, all, { spaces: 2 });
+
+    await fse.outputFile(
+        UNCRAWLED_FILE,
+        uncrawled.join("\n") + "\n"
+    );
+
+    console.log(`Primary domains: ${primaryDomains.size}`);
+    console.log(`Linked domains: ${linkedDomains.size}`);
+    console.log(`Uncrawled domains: ${uncrawled.length}`);
 
     console.log(`Done → ${OUTPUT_FILE}`);
 }
