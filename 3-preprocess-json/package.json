@@ -10,6 +10,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "csv-stringify": "^6.7.0",
     "fs-extra": "^11.3.4"
   }
 }

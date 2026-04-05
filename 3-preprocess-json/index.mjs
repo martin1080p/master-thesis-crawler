@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import zlib from "zlib";
 import fse from "fs-extra";
+import { stringify } from "csv-stringify/sync";
 
 const INPUT_DIR = "./input";
 const DOMAINS_FILE = "./output/domains.csv";
@@ -26,39 +27,17 @@ const COLUMNS = [
     "statusCode",
 ];
 
-// ---- CSV ESCAPE ----
-function csvEscape(item, property) {
-    const value = item[property];
-
-    if (value === null || value === undefined) return '';
-
-    if (!isNaN(value)) return value;
-
-    return `"${value.replace(/\"/g, '\\"')}"`;
-}
-
 function itemExtract(item) {
-    const domain = csvEscape(item, 'domain');
-    const createdAt = csvEscape(item, 'createdAt');
-    const canonicalUrl = csvEscape(item, 'canonicalUrl');
-    const error = csvEscape(item, 'error');
-    const title = csvEscape(item, 'title');
-    const language = csvEscape(item, 'language');
-    const metaDescription = csvEscape(item, 'metaDescription');
-    const metaKeywords = csvEscape(item, 'metaKeywords');
-    //const openGraph = csvEscape(item, 'openGraph');
-    const responseDuration = csvEscape(item, 'responseDuration');
-    const statusCode = csvEscape(item, 'statusCode');
+    const infoRow = COLUMNS.map(col => item[col] ?? null);
 
-    const infoStr = [domain, createdAt, canonicalUrl, error, title, language, metaDescription, metaKeywords, responseDuration, statusCode].join(',');
-    let links = (item['links'] === undefined) ?
+    const links = (item['links'] === undefined) ?
         [] :
         item['links'].map(function (l) {
             linkedDomains.add(l);
-            return [domain, l].join(',')
+            return [item['domain'], l];
         });
 
-    return { info: infoStr, links }
+    return { infoRow, links };
 }
 
 // ---- DYNAMO UNWRAP ----
@@ -143,11 +122,8 @@ async function run() {
 
     console.log(`Found ${files.length} files`);
 
-    const domainsHeader = [COLUMNS.join(",")];
-    const linksHeader = ["source,target"];
-
-    const domainsLines = [];
-    const linksLines = [];
+    const domainsRows = [COLUMNS];
+    const linksRows = [["source", "target"]];
 
     for (const file of files) {
         console.log(`Processing ${file}`);
@@ -158,15 +134,13 @@ async function run() {
 
             domains.add(item.domain);
             const extractedItem = itemExtract(item);
-            domainsLines.push(extractedItem.info)
+            domainsRows.push(extractedItem.infoRow);
 
             for (const link of extractedItem.links) {
-                linksLines.push(link);
+                linksRows.push(link);
             }
         }
     }
-
-
 
     // ---- UNCrawled ----
     const uncrawled = [...linkedDomains].filter(
@@ -174,8 +148,9 @@ async function run() {
     );
 
     // ---- WRITE FILES ----
-    await fse.outputFile(DOMAINS_FILE, [domainsHeader, ...domainsLines].join("\n"));
-    await fse.outputFile(LINKS_FILE, [linksHeader, ...linksLines].join("\n"));
+    const csvOpts = { quoted_string: true };
+    await fse.outputFile(DOMAINS_FILE, stringify(domainsRows, csvOpts));
+    await fse.outputFile(LINKS_FILE, stringify(linksRows, csvOpts));
     await fse.outputFile(
         UNCRAWLED_FILE,
         uncrawled.join("\n") + "\n"
