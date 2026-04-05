@@ -4,7 +4,7 @@ import { SQSClient, SendMessageBatchCommand } from "@aws-sdk/client-sqs";
 const sqs = new SQSClient({ region: "eu-north-1" });
 const queueUrl = "https://sqs.eu-north-1.amazonaws.com/743206478960/crawler-input";
 
-const MAX_TO_SEND = 100000;
+const MAX_TO_SEND = 3000000;
 const BATCH_SIZE = 10;
 
 async function main() {

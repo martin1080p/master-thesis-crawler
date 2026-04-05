@@ -5,37 +5,41 @@ import fse from "fs-extra";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const INPUT_DIR = "./input";
 const OUTPUT_FILE = "./output/merged.json";
 const UNCRAWLED_FILE = "./output/uncrawled.txt";
 const linkedDomains = new Set();
 
-function unwrapDynamo(value) {
+function unwrapDynamo(value, seen = new WeakSet()) {
     if (value === null || value === undefined) return value;
+
+    if (typeof value === "object") {
+        if (seen.has(value)) return null; // prevent infinite loop
+        seen.add(value);
+    }
 
     if (value.S !== undefined) return value.S;
     if (value.N !== undefined) return Number(value.N);
     if (value.BOOL !== undefined) return value.BOOL;
 
     if (value.L !== undefined) {
-        const links = value.L.map(unwrapDynamo);
-        links.forEach(linkedDomains.add, linkedDomains)
+        const links = value.L.map(v => unwrapDynamo(v, seen));
+        links.forEach(link => linkedDomains.add(link));
         return links;
     }
 
     if (value.M !== undefined) {
-        return unwrapObject(value.M);
+        return unwrapObject(value.M, seen);
     }
 
     return value;
 }
 
-function unwrapObject(obj) {
+function unwrapObject(obj, seen) {
     const result = {};
     for (const key of Object.keys(obj)) {
-        result[key] = unwrapDynamo(obj[key]);
+        result[key] = unwrapDynamo(obj[key], seen);
     }
     return result;
 }
@@ -93,26 +97,30 @@ async function run() {
     console.log(`Found ${files.length} files`);
 
     const all = [];
-
+    const outputStream = fs.createWriteStream(OUTPUT_FILE);
     const primaryDomains = new Set();
+
+    outputStream.write("[\n");
 
     for (const file of files) {
         console.log(`Processing ${file}`);
         const data = await processGzFile(file);
         console.log(`  → ${data.length}`);
 
-        all.push(...data);
-
-        data.forEach(d => primaryDomains.add(d.domain))
+        for (const item of data) {
+            outputStream.write(JSON.stringify(item, null, 2));
+            all.push(item);
+            primaryDomains.add(item.domain)
+        }
     }
+
+    // write output
+    outputStream.end();
 
     // compute truly uncrawled
     const uncrawled = [...linkedDomains].filter(
         (d) => !primaryDomains.has(d) && d.includes('.cz')
     );
-
-    // write output
-    await fse.writeJson(OUTPUT_FILE, all, { spaces: 2 });
 
     await fse.outputFile(
         UNCRAWLED_FILE,
