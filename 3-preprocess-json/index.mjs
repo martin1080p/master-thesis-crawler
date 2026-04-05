@@ -2,44 +2,86 @@ import fs from "fs";
 import path from "path";
 import zlib from "zlib";
 import fse from "fs-extra";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
 
 const INPUT_DIR = "./input";
-const OUTPUT_FILE = "./output/merged.json";
+const DOMAINS_FILE = "./output/domains.csv";
+const LINKS_FILE = "./output/links.csv";
 const UNCRAWLED_FILE = "./output/uncrawled.txt";
+
+const domains = new Set();
 const linkedDomains = new Set();
 
-function unwrapDynamo(value, seen = new WeakSet()) {
-    if (value === null || value === undefined) return value;
+// ---- FIXED COLUMN ORDER ----
+const COLUMNS = [
+    "domain",
+    "createdAt",
+    "canonicalUrl",
+    "error",
+    "title",
+    "language",
+    "metaDescription",
+    "metaKeywords",
+    //"openGraph",
+    "responseDuration",
+    "statusCode",
+];
 
-    if (typeof value === "object") {
-        if (seen.has(value)) return null; // prevent infinite loop
-        seen.add(value);
+// ---- CSV ESCAPE ----
+function csvEscape(item, property) {
+    const value = item[property];
+
+    if (value === null || value === undefined) return '';
+
+    if (!isNaN(value)) return value;
+
+    return `"${value.replace(/\"/g, '\\"')}"`;
+}
+
+function itemExtract(item) {
+    const domain = csvEscape(item, 'domain');
+    const createdAt = csvEscape(item, 'createdAt');
+    const canonicalUrl = csvEscape(item, 'canonicalUrl');
+    const error = csvEscape(item, 'error');
+    const title = csvEscape(item, 'title');
+    const language = csvEscape(item, 'language');
+    const metaDescription = csvEscape(item, 'metaDescription');
+    const metaKeywords = csvEscape(item, 'metaKeywords');
+    //const openGraph = csvEscape(item, 'openGraph');
+    const responseDuration = csvEscape(item, 'responseDuration');
+    const statusCode = csvEscape(item, 'statusCode');
+
+    const infoStr = [domain, createdAt, canonicalUrl, error, title, language, metaDescription, metaKeywords, responseDuration, statusCode].join(',');
+    let links = (item['links'] === undefined) ?
+        [] :
+        item['links'].map(function (l) {
+            linkedDomains.add(l);
+            return [domain, l].join(',')
+        });
+
+    return { info: infoStr, links }
+}
+
+// ---- DYNAMO UNWRAP ----
+function unwrapDynamo(value) {
+    if (value?.S !== undefined) return value.S;
+    if (value?.N !== undefined) return Number(value.N);
+    if (value?.BOOL !== undefined) return value.BOOL;
+
+    if (value?.L !== undefined) {
+        return value.L.map(v => unwrapDynamo(v));
     }
 
-    if (value.S !== undefined) return value.S;
-    if (value.N !== undefined) return Number(value.N);
-    if (value.BOOL !== undefined) return value.BOOL;
-
-    if (value.L !== undefined) {
-        const links = value.L.map(v => unwrapDynamo(v, seen));
-        links.forEach(link => linkedDomains.add(link));
-        return links;
-    }
-
-    if (value.M !== undefined) {
-        return unwrapObject(value.M, seen);
+    if (value?.M !== undefined) {
+        return unwrapObject(value.M);
     }
 
     return value;
 }
 
-function unwrapObject(obj, seen) {
+function unwrapObject(obj) {
     const result = {};
     for (const key of Object.keys(obj)) {
-        result[key] = unwrapDynamo(obj[key], seen);
+        result[key] = unwrapDynamo(obj[key]);
     }
     return result;
 }
@@ -52,12 +94,14 @@ function safeParse(str) {
     }
 }
 
+// ---- PROCESS FILE ----
 async function processGzFile(filePath) {
     return new Promise((resolve, reject) => {
         const results = [];
 
-        const gunzip = zlib.createGunzip();
-        const stream = fs.createReadStream(filePath).pipe(gunzip);
+        const stream = fs
+            .createReadStream(filePath)
+            .pipe(zlib.createGunzip());
 
         let buffer = "";
 
@@ -71,15 +115,17 @@ async function processGzFile(filePath) {
                 const parsed = safeParse(line.trim());
                 if (!parsed) continue;
 
-                const item = parsed.Item ?? parsed;
-                results.push(unwrapObject(item));
+                const item = unwrapObject(parsed.Item ?? parsed);
+                results.push(item);
             }
         });
 
         stream.on("end", () => {
             if (buffer.trim()) {
                 const parsed = safeParse(buffer.trim());
-                if (parsed) results.push(unwrapObject(parsed.Item ?? parsed));
+                if (parsed) {
+                    results.push(unwrapObject(parsed.Item ?? parsed));
+                }
             }
             resolve(results);
         });
@@ -88,50 +134,57 @@ async function processGzFile(filePath) {
     });
 }
 
+// ---- MAIN ----
 async function run() {
     const files = fs
         .readdirSync(INPUT_DIR)
-        .filter((f) => f.endsWith(".gz"))
-        .map((f) => path.join(INPUT_DIR, f));
+        .filter(f => f.endsWith(".gz"))
+        .map(f => path.join(INPUT_DIR, f));
 
     console.log(`Found ${files.length} files`);
 
-    const all = [];
-    const outputStream = fs.createWriteStream(OUTPUT_FILE);
-    const primaryDomains = new Set();
+    const domainsHeader = [COLUMNS.join(",")];
+    const linksHeader = ["source,target"];
 
-    outputStream.write("[\n");
+    const domainsLines = [];
+    const linksLines = [];
 
     for (const file of files) {
         console.log(`Processing ${file}`);
         const data = await processGzFile(file);
-        console.log(`  → ${data.length}`);
 
         for (const item of data) {
-            outputStream.write(JSON.stringify(item, null, 2));
-            all.push(item);
-            primaryDomains.add(item.domain)
+            if (!item.domain) continue;
+
+            domains.add(item.domain);
+            const extractedItem = itemExtract(item);
+            domainsLines.push(extractedItem.info)
+
+            for (const link of extractedItem.links) {
+                linksLines.push(link);
+            }
         }
     }
 
-    // write output
-    outputStream.end();
 
-    // compute truly uncrawled
+
+    // ---- UNCrawled ----
     const uncrawled = [...linkedDomains].filter(
-        (d) => !primaryDomains.has(d) && d.includes('.cz')
+        l => !domains.has(l) && l.endsWith('.cz')
     );
 
+    // ---- WRITE FILES ----
+    await fse.outputFile(DOMAINS_FILE, [domainsHeader, ...domainsLines].join("\n"));
+    await fse.outputFile(LINKS_FILE, [linksHeader, ...linksLines].join("\n"));
     await fse.outputFile(
         UNCRAWLED_FILE,
         uncrawled.join("\n") + "\n"
     );
 
-    console.log(`Primary domains: ${primaryDomains.size}`);
+    console.log(`Domains: ${domains.size}`);
     console.log(`Linked domains: ${linkedDomains.size}`);
-    console.log(`Uncrawled domains: ${uncrawled.length}`);
-
-    console.log(`Done → ${OUTPUT_FILE}`);
+    console.log(`Uncrawled: ${uncrawled.length}`);
+    console.log(`Done`);
 }
 
 run().catch(console.error);
