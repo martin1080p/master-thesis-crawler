@@ -130,7 +130,7 @@ async function run() {
         const data = await processGzFile(file);
 
         for (const item of data) {
-            if (!item.domain) continue;
+            if (!item.domain || domains.has(item.domain)) continue;
 
             domains.add(item.domain);
             const extractedItem = itemExtract(item);
