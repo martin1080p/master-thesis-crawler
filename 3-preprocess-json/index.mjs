@@ -6,11 +6,13 @@ import { stringify } from "csv-stringify/sync";
 
 const INPUT_DIR = "./input";
 const DOMAINS_FILE = "./output/domains.csv";
+const LINKING_FILE = "./output/linking.csv"
 const LINKS_FILE = "./output/links.csv";
 const UNCRAWLED_FILE = "./output/uncrawled.txt";
 
-const domains = new Set();
-const linkedDomains = new Set();
+const allDomains = new Set();       // All crawled domains
+const linkedDomains = new Set();    // Domains that crawled domains link to
+const linkingDomains = new Set();   // Crawled domains that have links
 
 // ---- FIXED COLUMN ORDER ----
 const COLUMNS = [
@@ -28,16 +30,40 @@ const COLUMNS = [
 ];
 
 function itemExtract(item) {
-    const infoRow = COLUMNS.map(col => item[col] ?? null);
+    const infoRow = COLUMNS.map(col => clean(item[col]));
 
-    const links = (item['links'] === undefined) ?
-        [] :
-        item['links'].map(function (l) {
+    const links = Array.isArray(item.links)
+        ? item.links.map(l => {
             linkedDomains.add(l);
-            return [item['domain'], l];
-        });
+            return [clean(item.domain), clean(l)];
+        })
+        : [];
 
     return { infoRow, links };
+}
+
+function decodeIfNeeded(str) {
+    if (typeof str !== "string") return str;
+
+    // heuristic: if it contains \u or \n or \"
+    if (str.includes("\\u") || str.includes("\\n") || str.includes("\\\"")) {
+        try {
+            return JSON.parse(`"${str}"`);
+        } catch {
+            return str;
+        }
+    }
+
+    return str;
+}
+
+function clean(value) {
+    if (value === null || value === undefined) return "";
+
+    return String(value)
+        .replace(/\r?\n/g, ' ')
+        .replace(/\\/g, '')
+        .replace(/\"/g, '')
 }
 
 // ---- DYNAMO UNWRAP ----
@@ -122,7 +148,8 @@ async function run() {
 
     console.log(`Found ${files.length} files`);
 
-    const domainsRows = [COLUMNS];
+    const domainsRows = [COLUMNS.map(String)];
+    const linkingRows = [COLUMNS.map(String)];
     const linksRows = [["source", "target"]];
 
     for (const file of files) {
@@ -130,11 +157,16 @@ async function run() {
         const data = await processGzFile(file);
 
         for (const item of data) {
-            if (!item.domain || domains.has(item.domain)) continue;
+            if (!item.domain || allDomains.has(item.domain)) continue;
 
-            domains.add(item.domain);
+            allDomains.add(item.domain);
             const extractedItem = itemExtract(item);
             domainsRows.push(extractedItem.infoRow);
+
+            if (extractedItem.links.length == 0) continue;
+
+            linkingDomains.add(item.domain)
+            linkingRows.push(extractedItem.infoRow)
 
             for (const link of extractedItem.links) {
                 linksRows.push(link);
@@ -144,19 +176,29 @@ async function run() {
 
     // ---- UNCrawled ----
     const uncrawled = [...linkedDomains].filter(
-        l => !domains.has(l) && l.endsWith('.cz')
+        l => !allDomains.has(l) && l.endsWith('.cz')
     );
 
     // ---- WRITE FILES ----
-    const csvOpts = { quoted_string: true };
+    const csvOpts = {
+        quoted: true,
+        escape: '"',
+        record_delimiter: '\n'
+    };
     await fse.outputFile(DOMAINS_FILE, stringify(domainsRows, csvOpts));
+    await fse.outputFile(LINKING_FILE, stringify(linkingRows, csvOpts));
     await fse.outputFile(LINKS_FILE, stringify(linksRows, csvOpts));
     await fse.outputFile(
         UNCRAWLED_FILE,
         uncrawled.join("\n") + "\n"
     );
+    await fse.outputFile(
+        UNCRAWLED_FILE,
+        uncrawled.join("\n") + "\n"
+    );
 
-    console.log(`Domains: ${domains.size}`);
+    console.log(`Domains: ${allDomains.size}`);
+    console.log(`Linking domains: ${linkingDomains.size}`);
     console.log(`Linked domains: ${linkedDomains.size}`);
     console.log(`Uncrawled: ${uncrawled.length}`);
     console.log(`Done`);
