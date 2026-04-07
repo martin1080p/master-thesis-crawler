@@ -42,21 +42,6 @@ function itemExtract(item) {
     return { infoRow, links };
 }
 
-function decodeIfNeeded(str) {
-    if (typeof str !== "string") return str;
-
-    // heuristic: if it contains \u or \n or \"
-    if (str.includes("\\u") || str.includes("\\n") || str.includes("\\\"")) {
-        try {
-            return JSON.parse(`"${str}"`);
-        } catch {
-            return str;
-        }
-    }
-
-    return str;
-}
-
 function clean(value) {
     if (value === null || value === undefined) return "";
 
