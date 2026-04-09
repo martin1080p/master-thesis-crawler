@@ -6,13 +6,11 @@ import { stringify } from "csv-stringify/sync";
 
 const INPUT_DIR = "./input";
 const DOMAINS_FILE = "./output/domains.csv";
-const LINKING_FILE = "./output/linking.csv"
 const LINKS_FILE = "./output/links.csv";
 const UNCRAWLED_FILE = "./output/uncrawled.txt";
 
 const allDomains = new Set();       // All crawled domains
 const linkedDomains = new Set();    // Domains that crawled domains link to
-const linkingDomains = new Set();   // Crawled domains that have links
 
 // ---- FIXED COLUMN ORDER ----
 const COLUMNS = [
@@ -134,7 +132,6 @@ async function run() {
     console.log(`Found ${files.length} files`);
 
     const domainsRows = [COLUMNS.map(String)];
-    const linkingRows = [COLUMNS.map(String)];
     const linksRows = [["source", "target"]];
 
     for (const file of files) {
@@ -149,9 +146,6 @@ async function run() {
             domainsRows.push(extractedItem.infoRow);
 
             if (extractedItem.links.length == 0) continue;
-
-            linkingDomains.add(item.domain)
-            linkingRows.push(extractedItem.infoRow)
 
             for (const link of extractedItem.links) {
                 linksRows.push(link);
@@ -171,7 +165,6 @@ async function run() {
         record_delimiter: '\n'
     };
     await fse.outputFile(DOMAINS_FILE, stringify(domainsRows, csvOpts));
-    await fse.outputFile(LINKING_FILE, stringify(linkingRows, csvOpts));
     await fse.outputFile(LINKS_FILE, stringify(linksRows, csvOpts));
     await fse.outputFile(
         UNCRAWLED_FILE,
@@ -183,7 +176,6 @@ async function run() {
     );
 
     console.log(`Domains: ${allDomains.size}`);
-    console.log(`Linking domains: ${linkingDomains.size}`);
     console.log(`Linked domains: ${linkedDomains.size}`);
     console.log(`Uncrawled: ${uncrawled.length}`);
     console.log(`Done`);
